@@ -1,3 +1,5 @@
+const DEBUG = true;
+
 var express = require('express');
 var path = require('path');
 var favicon = require('serve-favicon');
@@ -8,7 +10,8 @@ var bodyParser = require('body-parser');
 //var index = require('./routes/index');
 //var users = require('./routes/users');
 
-var dgram = require('dgram');
+var dgram = require('dgram');   // for UDP sockets
+var net = require('net');       // for TCP sockets
 var pubsub = require('pubsub');
 var sockets = {};
 var app = express();
@@ -28,6 +31,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 // add middleware for the dgram listeners
 app.use(function(req, res, next){
   req.dgram = dgram;
+  req.net = net;
   req.pubsub = pubsub;
   req.sockets = sockets;
   next();
@@ -46,7 +50,7 @@ sockRouter.get('/', function(req, res, next) {
 });
 
 sockRouter.post('/add', function(req, res, next){
-    const keys = [ 'port', 'protocol', 'address'];
+    var keys = [ 'port', 'protocol', 'address'];
     for (var i = 0; i < keys.length; i++ ){
         var key = keys[i];
         if (!(key in req.body)) {
@@ -56,28 +60,50 @@ sockRouter.post('/add', function(req, res, next){
     // if we get here it's got everything.
     const topic = req.body.protocol + "://" + req.body.address + ":" + req.body.port;
     if (topic in req.sockets){
-        const err = {error:"Socket " + topic + " already exists."};
-        console.log(err['error']);
-        res.json(err);
+        res.json({error:"Socket " + topic + " already exists."});
     } else {
-        console.log("Need to add socket " + topic);
-        var sock = req.dgram.createSocket('udp4');
+        if (!(req.body.protocol == "udp") && !(req.body.protocol == "tcp")){
+            res.json({error:"Protocol must be either udp or tcp."});
+        }
+        console.log("Need to add socket listener for " + topic);
+        var sock;
         const port = parseInt(req.body.port);
-        sock.bind(port, req.body.address);
-        sock.on('listening', function () {
-            console.log('UDP Server listening on ' + req.body.address + ":" + req.body.port);
-            sock = {
-                "socket": sock,
-                "listeners" : []
-            };
-            req.sockets[topic] = sock;
-            var topics = [];
-            for (var t in req.sockets) {
-                topics.push(t);
+        if(req.body.protocol == "udp"){
+            sock = req.dgram.createSocket('udp4');
+            sock.bind(port, req.body.address);
+            if (DEBUG){
+                sock.on('message', function(msg){
+                    console.log("Received data on " + topic + " -- " + msg);
+                });
             }
-            res.json(topics);
-        });
+            sock.on('listening', function () {
+                console.log('UDP Server listening on ' + req.body.address + ":" + req.body.port);
+                req.sockets[topic] = {
+                    "socket": sock,
+                    "listeners" : []
+                };
+            });
+        } else { // tcp
+            sock = req.net.createServer(function(conn) {});
+            if (DEBUG) {
+                sock.on('connection', function(conn){
+                    console.log("Connection on " + topic);
+                    conn.on('data', function (data) {
+                        console.log("Received data on " + topic + " -- " + data);
+                    });
+                });
+            }
+            sock.listen(port, req.body.address, function(){
+                console.log('TCP Server listening on ' + req.body.address + ":" + req.body.port);
+                req.sockets[topic] = {
+                    "socket": sock,
+                    "listeners": []
+                };
+            });
 
+
+        }
+        res.redirect('/sockets');
     }
 });
 
